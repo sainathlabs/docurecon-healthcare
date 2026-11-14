@@ -10,13 +10,16 @@ import io
 import re
 
 DATE_RE = re.compile(r'(?<!\d)(\d{1,2}/\d{1,2}/20\d{2})(?!\d)')
-TIME_RE = re.compile(r'(?<!\d)(\d{1,2}:\d{2}\s*[AP]M)(?!\w)', re.I)
+TIME_RE = re.compile(
+    r'(?<!\d)(\d{1,2}[:-]\d{2}\s*[AP]M)(?!\w)',
+    re.I
+)
 MRN_RE = re.compile(r'\bSYN[-– ]?\d{3}[-– ]?\d{3}\b', re.I)
 NAME_RE = re.compile(r'\b[A-Z][A-Z]{2,},\s*[A-Z][A-Z]{2,}\b')
 
 
 def _page_image(page, region=None, scale=3):
-    import fitz
+    import pymupdf as fitz
     from PIL import Image
     pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=fitz.Rect(region) if region else None, alpha=False)
     return Image.open(io.BytesIO(pix.tobytes('png'))).convert('RGB')
@@ -39,11 +42,34 @@ def _standard_date(text):
     except ValueError: return ''
 
 
+
 def _standard_time(text):
-    match=TIME_RE.search(text)
-    if not match:return ''
-    try: return datetime.strptime(re.sub(r'\s+',' ',match.group(1).upper()), '%I:%M %p').strftime('%H:%M')
-    except ValueError: return ''
+    match = TIME_RE.search(text)
+
+    if not match:
+        return ""
+
+    raw_time = match.group(1).upper().strip()
+
+    # OCR can read the colon as a hyphen.
+    raw_time = raw_time.replace("-", ":")
+
+    # Standardise spacing before AM/PM.
+    raw_time = re.sub(
+        r"\s*([AP]M)$",
+        r" \1",
+        raw_time,
+    )
+
+    try:
+        return datetime.strptime(
+            raw_time,
+            "%I:%M %p",
+        ).strftime("%H:%M")
+
+    except ValueError:
+        return ""
+
 
 
 def extract_paperwork(path: str | Path) -> dict:

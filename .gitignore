@@ -14,3 +14,16 @@ output/
 reports/generated/
 *.sqlite
 *.db
+.env
+.env.*
+!.env.example
+# Local generated research results
+results/
+ai_benchmark_results.csv
+
+# Temporary ground-truth copies
+sample_data/paperwork/ground_truth1.csv
+sample_data/paperwork/ground_truth2.csv
+
+# Local diagnostic output
+*.tmp

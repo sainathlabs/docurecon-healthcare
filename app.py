@@ -6,7 +6,9 @@ import streamlit as st
 import pandas as pd
 
 PROJECT = Path(__file__).resolve().parent
-sys.path.insert(0, str(PROJECT / 'src'))
+
+sys.path.insert(0, str(PROJECT))
+sys.path.insert(0, str(PROJECT / "src"))
 from docurecon.reconciliation.daily_engine import run_daily
 
 st.set_page_config(page_title='DocuRecon | Daily Reconciliation', layout='wide')
@@ -29,7 +31,22 @@ for col, (folder, title, allowed) in zip(cols, folders):
         count = len([p for p in (base / folder).iterdir() if p.is_file() and p.suffix.lower().lstrip('.') in allowed]) if (base / folder).is_dir() else 0
         st.caption(f'{count} local file(s) detected')
 
-if st.button('Run Daily Reconciliation', type='primary', use_container_width=True):
+use_ai = st.checkbox(
+    "Enable AI-assisted validation (synthetic documents only)",
+    value=False,
+    help=(
+        "Uses the OpenAI API on selected synthetic PDFs. "
+        "Requires API access and may incur charges."
+    ),
+)
+
+
+if st.button(
+    "Run Daily Reconciliation",
+    type="primary",
+    use_container_width=True,
+):
+    st.session_state.pop("daily_result", None)
     try:
         for folder, files in uploads.items():
             destination = base / folder
@@ -37,10 +54,25 @@ if st.button('Run Daily Reconciliation', type='primary', use_container_width=Tru
             for f in files:
                 safe_name = Path(f.name).name
                 if safe_name not in ('', '.', '..'):
-                    (destination / safe_name).write_bytes(f.getvalue())
-        with st.spinner('Extracting paperwork, parsing HL7 and ACKs, and comparing records...'):
-            st.session_state['daily_result'] = run_daily(base, selected)
-        st.session_state['daily_date'] = selected.isoformat()
+                    target = destination / safe_name
+                    if target.exists():
+                        raise FileExistsError(
+                            f"File already exists: {target.name}. "
+                            "Rename the uploaded file or remove the existing copy."
+                        )
+
+                    target.write_bytes(f.getvalue())
+        with st.spinner(
+            "Extracting paperwork, parsing HL7 and ACKs, "
+            "and comparing records..."
+        ):
+            st.session_state["daily_result"] = run_daily(
+                base,
+                selected,
+                use_ai=use_ai,
+            )
+
+        st.session_state["daily_date"] = selected.isoformat()
     except Exception as exc:
         st.error(f'Reconciliation could not complete: {exc}')
 
