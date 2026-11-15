@@ -14,7 +14,10 @@ TIME_RE = re.compile(
     r'(?<!\d)(\d{1,2}[:-]\d{2}\s*[AP]M)(?!\w)',
     re.I
 )
-MRN_RE = re.compile(r'\bSYN[-– ]?\d{3}[-– ]?\d{3}\b', re.I)
+MRN_RE = re.compile(
+    r'\b(?:SYN[-– ]?\d{3}[-– ]?\d{3}|SYN[-– ]?PILOT[-– ]?\d{4})\b',
+    re.I
+)
 NAME_RE = re.compile(r'\b[A-Z][A-Z]{2,},\s*[A-Z][A-Z]{2,}\b')
 
 
@@ -96,8 +99,37 @@ def extract_paperwork(path: str | Path) -> dict:
                 'review_reasons':[], 'ocr_pages':doc.page_count}
         if not form:result['review_reasons'].append('FORM_NOT_IDENTIFIED')
         # Use full-page text for labels/names and constrained ROI to reduce OCR noise.
-        names=NAME_RE.findall(text0)
-        result['patient_name']=names[0] if names else ''
+
+        # First attempt: existing patient-name extraction
+        names = NAME_RE.findall(text0)
+
+        result["patient_name"] = (
+            names[0].strip().upper()
+            if names else ""
+        )
+
+        # Fallback: patient name in the admission request.
+        # Some scanned OMH forms have an unreadable
+        # header but a readable name elsewhere.
+        if not result["patient_name"]:
+            admission_match = re.search(
+                r"hereby\s+request\s+that\s*"
+                r"([A-Z][A-Z'-]{1,},\s*[A-Z][A-Z'-]{1,})"
+                r"\s+be\s+admitted",
+                text0,
+                re.I,
+            )
+
+            if admission_match:
+                result["patient_name"] = (
+                    admission_match.group(1)
+                    .strip()
+                    .upper()
+                )
+                result["review_reasons"].append(
+                    "PATIENT_NAME_FROM_ADMISSION_SECTION"
+                )
+
         mrn=_match(MRN_RE,text0)
         if not mrn:
             crop=_ocr(_page_image(doc[0],(375,105,575,145)),psm=6)
@@ -108,12 +140,61 @@ def extract_paperwork(path: str | Path) -> dict:
         filename_id=_match(MRN_RE,path.stem)
         if filename_id and result['mrn'] and result['mrn'] != filename_id:
             result['review_reasons'].append('MRN_CONFLICTS_WITH_SYNTHETIC_FILENAME')
-        lines=[line.strip() for line in text0.splitlines() if line.strip()]
-        # Synthetic facility may be in header and/or an admission request.
-        candidates=[l for l in lines if 'TEST HOSPITAL' in l.upper() or 'TEST CENTER' in l.upper() or 'TEST MEDICAL' in l.upper()]
-        for l in candidates:
-            match=re.search(r'(RIVERBEND TEST HOSPITAL|NORTHBRIDGE TEST CENTER|LAKESIDE TEST MEDICAL CTR|HUDSON VALLEY TEST HOSPITAL)',l,re.I)
-            if match:result['facility']=match.group(1).upper();break
+
+
+        lines = [
+            line.strip()
+            for line in text0.splitlines()
+            if line.strip()
+        ]
+
+
+        # Facility extraction from the scanned document.
+        # Never infer a facility from filename or ground truth.
+
+        facility_patterns = (
+            r"RIVERBEND TEST HOSPITAL",
+            r"NORTHBRIDGE TEST CENTER",
+            r"LAKESIDE TEST MEDICAL CTR",
+            r"HUDSON VALLEY TEST HOSPITAL",
+            r"SYNTHETIC RESEARCH FACILITY",
+        )
+
+        def find_facility(ocr_text):
+            for pattern in facility_patterns:
+                match = re.search(pattern, ocr_text, re.I)
+                if match:
+                    return match.group(0).upper()
+            return ""
+
+        # First use the existing PSM 3 full-page OCR.
+        result["facility"] = find_facility(text0)
+
+        # Try sparse-text OCR if the facility was not found.
+        if not result["facility"]:
+            sparse_text = _ocr(
+                _page_image(doc[0], scale=3),
+                psm=11,
+            )
+            result["facility"] = find_facility(sparse_text)
+
+        # Try PSM 6 and preserve only partial evidence.
+        if not result["facility"]:
+            block_text = _ocr(
+                _page_image(doc[0], scale=3),
+                psm=6,
+            )
+
+            if re.search(
+                r"\bRESEARCH\s+FACILITY\b",
+                block_text,
+                re.I,
+            ):
+                result["review_reasons"].append(
+                    "PARTIAL_FACILITY_NAME_REQUIRES_REVIEW"
+                )
+
+
         if form=='9.39':
             # Bottom right: signature row, rather than arrival date.
             roi=_ocr(_page_image(doc[0],(387,678,612,724)),psm=6)

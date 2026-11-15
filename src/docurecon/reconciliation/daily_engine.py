@@ -368,6 +368,18 @@ def run_daily(
             control = message["control_id"]
             hl7_file = message["source"]
 
+                        # Compare the two identifiers without treating
+            # a name-only candidate as a verified identity.
+            hl7_mrn = (
+                message.get("patient_id") or ""
+            ).strip().upper()
+
+            if mrn and hl7_mrn and mrn != hl7_mrn:
+                issues.append("MRN_DISAGREEMENT")
+                reasons.append(
+                    "PATIENT_IDENTITY_REQUIRES_HUMAN_REVIEW"
+                )
+
             # ------------------------------------------
             # Legal status comparison
             # ------------------------------------------
