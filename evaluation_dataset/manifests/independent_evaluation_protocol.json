@@ -1,0 +1,45 @@
+
+{
+  "project": "DocuRecon",
+  "protocol_version": "1.0.0",
+  "evaluation_type": "Independent synthetic test",
+  "pipeline_tag": "v0.3.0-pilot",
+  "pipeline_commit": "2a3ebdd",
+  "random_seed": 20261115,
+  "total_cases": 400,
+  "synthetic_data_only": true,
+  "allow_pipeline_tuning_on_test_set": false,
+  "primary_scenarios": {
+    "CLEAN_MATCH": 100,
+    "OCR_SCAN_QUALITY": 80,
+    "INCOMPLETE_DOCUMENTATION": 50,
+    "IDENTIFIER_DISCREPANCY": 50,
+    "COMPLETION_TIME_DISCREPANCY": 40,
+    "MISSING_HL7_OR_ACK": 40,
+    "DUPLICATE_OR_ACK_ERROR": 40
+  },
+  "form_types": {
+    "9.37": 200,
+    "9.39": 200
+  },
+  "scan_quality_levels": [
+    "clean",
+    "moderate",
+    "degraded"
+  ],
+  "evaluation_metrics": [
+    "field_exact_match_accuracy",
+    "precision",
+    "recall",
+    "f1_score",
+    "scenario_detection_accuracy",
+    "uncertainty_rate",
+    "false_positive_rate",
+    "processing_time_seconds"
+  ],
+  "ground_truth_policy": {
+    "generated_before_evaluation": true,
+    "stored_separately_from_inputs": true,
+    "not_accessible_to_reconciliation_engine": true
+  }
+}
