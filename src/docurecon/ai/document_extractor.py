@@ -20,14 +20,31 @@ MODEL = "gpt-4.1-mini"
 
 def extract_document(pdf_path):
     pdf_path = Path(pdf_path).resolve()
-    sample_folder = (ROOT / "sample_data" / "paperwork").resolve()
 
-    # Safety: only use our synthetic research samples
+    # Explicitly approved synthetic development directories.
+    allowed_folders = (
+        (ROOT / "sample_data" / "paperwork").resolve(),
+        (
+            ROOT / "evaluation_dataset"
+            / "ai_development" / "paperwork"
+        ).resolve(),
+    )
+
+    allowed_name_prefix = "DocuRecon_SYNTHETIC_"
+
     if (
-        not pdf_path.is_relative_to(sample_folder)
-        or not pdf_path.name.startswith("DocuRecon_SYNTHETIC_")
+        not pdf_path.is_file()
+        or not pdf_path.name.startswith(allowed_name_prefix)
+        or not any(
+            pdf_path.is_relative_to(folder)
+            for folder in allowed_folders
+        )
     ):
-        raise ValueError("Only synthetic research PDFs are permitted.")
+        raise ValueError(
+            "AI extraction is restricted to approved "
+            "synthetic development PDFs."
+        )
+
 
     content = [{
         "type": "input_text",

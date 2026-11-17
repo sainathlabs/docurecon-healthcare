@@ -37,6 +37,9 @@ from docurecon.reconciliation.daily_ai_validation import (
     validate_with_ai,
 )
 
+from docurecon.reconciliation.date_assignment import (
+    assess_date_assignment,
+)
 
 # --------------------------------------------------
 # Helper functions
@@ -90,6 +93,9 @@ def run_daily(
     source_mode="folder",
     uploads=None,
     use_ai=False,
+    date_ai_evidence=None,
+    review_excluded_dates_with_ai=False,
+    max_date_review_ai_calls=0,
 ) -> dict:
     """
     Run daily reconciliation using supplied folders.
@@ -176,6 +182,152 @@ def run_daily(
         for paper in papers
         if not paper.get("completion_date")
     ]
+
+     # Do not mutate the caller's evidence dictionary.
+    date_ai_evidence = dict(date_ai_evidence or {})
+
+    date_review_ai_errors = []
+    date_review_ai_calls = 0
+
+    if not isinstance(max_date_review_ai_calls, int):
+        raise ValueError(
+            "max_date_review_ai_calls must be an integer"
+        )
+
+    if max_date_review_ai_calls < 0:
+        raise ValueError(
+            "max_date_review_ai_calls cannot be negative"
+        )
+
+    if review_excluded_dates_with_ai:
+        if max_date_review_ai_calls == 0:
+            raise ValueError(
+                "Set a positive max_date_review_ai_calls "
+                "to enable live AI date review."
+            )
+
+        from docurecon.ai.document_extractor import (
+            extract_document,
+        )
+
+        # Only OCR-excluded paperwork is considered.
+        # Existing daily rows are not changed.
+        excluded_papers = [
+            paper
+            for paper in papers
+            if paper.get("completion_date") != day
+        ]
+
+        for paper in excluded_papers:
+            if (
+                date_review_ai_calls
+                >= max_date_review_ai_calls
+            ):
+                break
+
+            source = paper["source"]
+
+            # Reuse supplied evidence when available.
+            if source in date_ai_evidence:
+                continue
+
+            pdf_path = root / "paperwork" / source
+
+            # Counts attempted API calls, including failures.
+            date_review_ai_calls += 1
+
+            try:
+                ai_response = extract_document(
+                    pdf_path
+                )
+
+                ai_fields = ai_response.get(
+                    "extracted_fields", {}
+                )
+
+                if not isinstance(ai_fields, dict):
+                    raise ValueError(
+                        "Invalid AI extraction response"
+                    )
+
+                date_ai_evidence[source] = {
+                    "completion_date": (
+                        ai_fields.get(
+                            "completion_date"
+                        ) or ""
+                    )
+                }
+
+            except Exception as exc:
+                date_review_ai_errors.append({
+                    "paperwork_file": source,
+                    "error_type": (
+                        type(exc).__name__
+                    ),
+                    "error": str(exc),
+                })
+
+    date_review_queue = []
+
+
+    for paper in papers:
+        source = paper["source"]
+        ocr_date = paper.get("completion_date") or ""
+
+        evidence = date_ai_evidence.get(source)
+        ai_attempted = isinstance(evidence, dict)
+
+        ai_date = (
+            evidence.get("completion_date") or ""
+            if ai_attempted
+            else ""
+        )
+
+        assessment = assess_date_assignment(
+            ocr_date,
+            ai_date,
+            day,
+            ai_attempted=ai_attempted,
+        )
+
+        # Include unassigned paperwork and relevant
+        # disagreements involving the requested date.
+        relevant = (
+            not ocr_date
+            or (
+                ai_attempted
+                and assessment["review_required"]
+                and (
+                    ocr_date == day
+                    or ai_date == day
+                )
+            )
+        )
+
+        if relevant:
+            date_review_queue.append({
+                "paperwork_file": source,
+                "selected_date": day,
+                "ocr_date": ocr_date,
+                "ai_date": ai_date,
+                "classification": assessment[
+                    "classification"
+                ],
+                "review_required": assessment[
+                    "review_required"
+                ],
+                "ai_supported_candidate": assessment[
+                    "ai_supported_candidate"
+                ],
+                "included_in_daily": assessment[
+                    "include_in_daily"
+                ],
+                "reason": (
+                    "Date evidence requires review; "
+                    "legal completion is not verified."
+                ),
+            })
+
 
     # --------------------------------------------------
     # 4. Optional live AI validation
@@ -659,7 +811,12 @@ def run_daily(
             "OCR_UNCERTAIN"
         ],
 
-        "rows": rows,
+       "rows": rows,
+
+        "date_review_queue": date_review_queue,
+        "date_review_ai_calls": date_review_ai_calls,
+
+        "date_review_ai_errors": date_review_ai_errors,
 
         "parse_errors": errors,
 

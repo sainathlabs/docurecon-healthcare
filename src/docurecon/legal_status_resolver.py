@@ -18,23 +18,35 @@ from experiments.normalize_fields import (
 )
 
 
+
 def status_from_form_type(form_type):
     """
-    Identify the synthetic profile's legal status
-    from an explicit OMH form number.
+    Extract legal status from explicit references
+    or supported OMH form numbers.
+
+    Conflicting evidence is not resolved automatically.
     """
     if not form_type:
         return None
 
     text = str(form_type).upper()
+    statuses = set()
 
+    # Explicit Mental Hygiene Law references.
+    explicit_matches = re.findall(
+        r"(?<![\d.])9\s*\.\s*(37|39)(?!\d)",
+        text,
+    )
+
+    for value in explicit_matches:
+        statuses.add(f"9.{value}")
+
+    # Supported OMH form numbers.
     numbers = re.findall(
         r"\b(?:OMH\s*(?:FORM\s*)?)?"
         r"(474|475A?)\b",
         text,
     )
-
-    statuses = set()
 
     for number in numbers:
         if number == "474":
@@ -43,9 +55,10 @@ def status_from_form_type(form_type):
             statuses.add("9.37")
 
     if len(statuses) == 1:
-        return statuses.pop()
+        return next(iter(statuses))
 
     return None
+
 
 
 def resolve_legal_status(ocr_record, ai_record):
