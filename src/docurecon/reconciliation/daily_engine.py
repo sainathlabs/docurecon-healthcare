@@ -37,6 +37,10 @@ from docurecon.reconciliation.daily_ai_validation import (
     validate_with_ai,
 )
 
+from docurecon.reconciliation.identity_validation import (
+    assess_identity,
+)
+
 from docurecon.reconciliation.date_assignment import (
     assess_date_assignment,
 )
@@ -377,6 +381,9 @@ def run_daily(
         issues = []
 
         ai_check = ai_checks.get(source, {})
+                # Identity assessment is populated only when
+        # successful AI evidence and an HL7 candidate exist.
+        identity_assessment = None
 
         # Preserve AI extraction disagreements.
         if use_ai:
@@ -516,6 +523,120 @@ def run_daily(
         else:
 
             message = candidates[0]
+
+
+            # ------------------------------------------
+            # OCR vs HL7 patient-name consistency
+            # ------------------------------------------
+            #
+            # Perform this check even when AI is disabled.
+            # A matching MRN does not establish that the
+            # patient names are consistent.
+            #
+            # This is an evidence discrepancy, not proof
+            # that the HL7 patient name is incorrect.
+
+            paperwork_name = _normal_name(
+                paper.get("patient_name", "")
+            )
+
+            hl7_patient_name = _normal_name(
+                message.get("patient_name", "")
+            )
+
+            if paperwork_name and hl7_patient_name:
+                if paperwork_name != hl7_patient_name:
+                    issues.append(
+                        "PAPERWORK_HL7_NAME_DISAGREEMENT"
+                    )
+
+                    reasons.append(
+                        "PATIENT_NAME_REQUIRES_HUMAN_REVIEW"
+                    )
+
+            elif not paperwork_name and hl7_patient_name:
+                reasons.append(
+                    "PAPERWORK_PATIENT_NAME_UNREADABLE"
+                )
+
+            elif paperwork_name and not hl7_patient_name:
+                reasons.append(
+                    "HL7_PATIENT_NAME_MISSING"
+                )
+
+
+
+            # ------------------------------------------
+            # OCR / AI / HL7 identity consistency
+            # ------------------------------------------
+            #
+            # Only evaluate the three-source comparison
+            # when AI validation has succeeded.
+            #
+            # This does not verify patient identity.
+            # It only identifies conflicting evidence.
+
+            if (
+                use_ai
+                and not ai_check.get("error")
+                and ai_check.get("comparisons")
+            ):
+                comparisons = ai_check["comparisons"]
+
+                ai_name = (
+                    comparisons.get(
+                        "patient_name", {}
+                    ).get("ai") or ""
+                )
+
+                ai_mrn = (
+                    comparisons.get(
+                        "mrn", {}
+                    ).get("ai") or ""
+                )
+
+                identity_assessment = assess_identity(
+                    ocr_name=paper.get(
+                        "patient_name", ""
+                    ),
+                    ocr_mrn=paper.get("mrn", ""),
+                    ai_name=ai_name,
+                    ai_mrn=ai_mrn,
+                    hl7_name=message.get(
+                        "patient_name", ""
+                    ),
+                    hl7_mrn=message.get(
+                        "patient_id", ""
+                    ),
+                )
+
+                # A name discrepancy is important even
+                # when the paperwork and HL7 MRNs match.
+                if (
+                    identity_assessment["name"]["status"]
+                    == "CONFLICT"
+                ):
+                    issues.append(
+                        "PATIENT_NAME_EVIDENCE_CONFLICT"
+                    )
+                    reasons.append(
+                        "PATIENT_NAME_REQUIRES_HUMAN_REVIEW"
+                    )
+
+                # MRN disagreement is also handled by the
+                # existing engine. Avoid duplicate issue codes.
+                if (
+                    identity_assessment["mrn"]["status"]
+                    == "CONFLICT"
+                    and "MRN_DISAGREEMENT" not in issues
+                ):
+                    issues.append(
+                        "PATIENT_MRN_EVIDENCE_CONFLICT"
+                    )
+                    reasons.append(
+                        "PATIENT_IDENTITY_REQUIRES_HUMAN_REVIEW"
+                    )
+
 
             control = message["control_id"]
             hl7_file = message["source"]
@@ -723,6 +844,65 @@ def run_daily(
                 or "NOT_EVALUATED"
             )
 
+
+            # Preserve the identity assessment in the
+            # reconciliation result for audit and review.
+            if identity_assessment is not None:
+                row["identity_name_status"] = (
+                    identity_assessment["name"]["status"]
+                )
+
+                row["identity_mrn_status"] = (
+                    identity_assessment["mrn"]["status"]
+                )
+
+                row["identity_review_required"] = (
+                    identity_assessment[
+                        "identity_review_required"
+                    ]
+                )
+
+                row["identity_verified"] = False
+
+
+                # Preserve pairwise evidence in the report.
+                # These comparisons describe agreement,
+                # not independently verified identity.
+                for field in ("name", "mrn"):
+                    pairwise = identity_assessment[
+                        field
+                    ]["pairwise"]
+
+                    for comparison in (
+                        "ocr_vs_ai",
+                        "ocr_vs_hl7",
+                        "ai_vs_hl7",
+                    ):
+                        row[
+                            f"identity_{field}_{comparison}"
+                        ] = pairwise[comparison]
+
+
+            else:
+                row["identity_name_status"] = "NOT_EVALUATED"
+                row["identity_mrn_status"] = "NOT_EVALUATED"
+                row["identity_review_required"] = True
+                row["identity_verified"] = False
+
+
+                # No three-source comparison was performed.
+                for field in ("name", "mrn"):
+                    for comparison in (
+                        "ocr_vs_ai",
+                        "ocr_vs_hl7",
+                        "ai_vs_hl7",
+                    ):
+                        row[
+                            f"identity_{field}_{comparison}"
+                        ] = "NOT_EVALUATED"
+
+
+
             # Preserve HL7/ACK exceptions.
             # An AI disagreement must not erase them.
             if (
@@ -768,6 +948,41 @@ def run_daily(
             ),
         })
 
+
+    # --------------------------------------------------
+    # Separate daily and unassigned reporting views.
+    #
+    # Keep the original "rows" unchanged for backward
+    # compatibility with existing tests and consumers.
+    # --------------------------------------------------
+
+    daily_rows = [
+        row
+        for row in rows
+        if row.get("completion_date") == day
+    ]
+
+    unassigned_paperwork = [
+        {
+            "paperwork_file": paper["source"],
+            "patient_name": paper.get(
+                "patient_name", ""
+            ),
+            "ocr_mrn": paper.get("mrn", ""),
+            "legal_status_paperwork": paper.get(
+                "form_type", ""
+            ),
+            "ocr_completion_date": "",
+            "review_required": True,
+            "reason": (
+                "OCR completion date unreadable; "
+                "date assignment requires review."
+            ),
+        }
+        for paper in excluded_missing_date
+    ]
+
+
     # --------------------------------------------------
     # 8. Identify orphan ACK messages
     # --------------------------------------------------
@@ -812,6 +1027,13 @@ def run_daily(
         ],
 
        "rows": rows,
+       "daily_rows": daily_rows,
+
+        "unassigned_paperwork": unassigned_paperwork,
+
+        "unassigned_paperwork_count": len(
+            unassigned_paperwork
+        ),
 
         "date_review_queue": date_review_queue,
         "date_review_ai_calls": date_review_ai_calls,
