@@ -554,15 +554,27 @@ def run_daily(
                         "PATIENT_NAME_REQUIRES_HUMAN_REVIEW"
                     )
 
+
             elif not paperwork_name and hl7_patient_name:
+                # MRN linkage succeeded, but the patient
+                # name could not be extracted from paperwork.
+                # This is missing evidence, not proof of an
+                # HL7 name discrepancy.
+                issues.append(
+                    "PAPERWORK_PATIENT_NAME_MISSING"
+                )
                 reasons.append(
                     "PAPERWORK_PATIENT_NAME_UNREADABLE"
                 )
 
             elif paperwork_name and not hl7_patient_name:
+                issues.append(
+                    "HL7_PATIENT_NAME_MISSING"
+                )
                 reasons.append(
                     "HL7_PATIENT_NAME_MISSING"
                 )
+
 
 
 

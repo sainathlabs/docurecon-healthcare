@@ -354,3 +354,80 @@ def test_ocr_only_matching_names_no_disagreement():
         "PAPERWORK_HL7_NAME_DISAGREEMENT"
         not in row["issues"]
     )
+
+
+
+
+def test_ocr_only_missing_paperwork_name_requires_review():
+    """
+    Regression test for the missing-name problem
+    identified in synthetic retrospective case 0312.
+
+    The paperwork MRN matches the HL7 MRN, but
+    the OCR patient name is empty.
+
+    The engine must flag missing identity evidence,
+    rather than treating it as a provisional match.
+    """
+
+    paper = make_paper()
+    paper["patient_name"] = ""
+
+    with (
+        patch(
+            "docurecon.reconciliation.daily_engine.extract_folder",
+            return_value=([paper], []),
+        ),
+        patch(
+            "docurecon.reconciliation.daily_engine.parse_hl7_folder",
+            return_value=(
+                [make_message("MARTINEZ^ELENA")],
+                [],
+            ),
+        ),
+        patch(
+            "docurecon.reconciliation.daily_engine.parse_ack_folder",
+            return_value=([], []),
+        ),
+        patch(
+            "docurecon.reconciliation.daily_engine.validate_with_ai",
+            side_effect=AssertionError(
+                "AI must not run in OCR-only mode"
+            ),
+        ) as mock_ai,
+    ):
+        result = run_daily(
+            ROOT,
+            DAY,
+            use_ai=False,
+        )
+
+    mock_ai.assert_not_called()
+
+    assert len(result["daily_rows"]) == 1
+
+    row = result["daily_rows"][0]
+
+    # MRN-based candidate selection still works.
+    assert row["match_method"] == "MRN"
+    assert row["control_id"] == "TEST-C1"
+
+    # Missing OCR evidence must be clearly recorded.
+    assert (
+        "PAPERWORK_PATIENT_NAME_MISSING"
+        in row["issues"]
+    )
+
+    assert (
+        "PAPERWORK_PATIENT_NAME_UNREADABLE"
+        in row["uncertainty_reasons"]
+    )
+
+    # Missing name is not a confirmed name disagreement.
+    assert (
+        "PAPERWORK_HL7_NAME_DISAGREEMENT"
+        not in row["issues"]
+    )
+
+    # Missing evidence prevents a provisional match.
+    assert row["status"] == "PROVISIONAL_EXCEPTION"
