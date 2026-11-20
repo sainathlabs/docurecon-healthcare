@@ -9,6 +9,10 @@ from datetime import datetime
 import io
 import re
 
+from docurecon.parsers.patient_name_extractor import (
+    extract_patient_name_candidate,
+)
+
 DATE_RE = re.compile(r'(?<!\d)(\d{1,2}/\d{1,2}/20\d{2})(?!\d)')
 TIME_RE = re.compile(
     r'(?<!\d)(\d{1,2}[:-]\d{2}\s*[AP]M)(?!\w)',
@@ -100,35 +104,80 @@ def extract_paperwork(path: str | Path) -> dict:
         if not form:result['review_reasons'].append('FORM_NOT_IDENTIFIED')
         # Use full-page text for labels/names and constrained ROI to reduce OCR noise.
 
-        # First attempt: existing patient-name extraction
-        names = NAME_RE.findall(text0)
+        #
+        #  First attempt: existing patient-name extraction
+        #names = NAME_RE.findall(text0)
 
-        result["patient_name"] = (
-            names[0].strip().upper()
-            if names else ""
+         # ----------------------------------------------
+        # Patient-name extraction from OCR evidence
+        # ----------------------------------------------
+        # Prioritise recognised name fields and admission
+        # text instead of blindly selecting the first
+        # uppercase comma-separated string.
+        #
+        # Do not use HL7, filenames or ground truth
+        # to fill missing paperwork names.
+
+        name_evidence = extract_patient_name_candidate(
+            text0
         )
 
-        # Fallback: patient name in the admission request.
-        # Some scanned OMH forms have an unreadable
-        # header but a readable name elsewhere.
-        if not result["patient_name"]:
-            admission_match = re.search(
-                r"hereby\s+request\s+that\s*"
-                r"([A-Z][A-Z'-]{1,},\s*[A-Z][A-Z'-]{1,})"
-                r"\s+be\s+admitted",
-                text0,
-                re.I,
+        result["patient_name"] = name_evidence[
+            "patient_name"
+        ]
+
+        # Preserve where the name was extracted from
+        # so the result remains auditable.
+        result["patient_name_source"] = name_evidence[
+            "source"
+        ]
+
+        if name_evidence["source"] == "ADMISSION_REQUEST":
+            result["review_reasons"].append(
+                "PATIENT_NAME_FROM_ADMISSION_SECTION"
             )
 
-            if admission_match:
-                result["patient_name"] = (
-                    admission_match.group(1)
-                    .strip()
-                    .upper()
-                )
-                result["review_reasons"].append(
-                    "PATIENT_NAME_FROM_ADMISSION_SECTION"
-                )
+        elif name_evidence["source"] == (
+            "SINGLE_UNLABELLED_CANDIDATE"
+        ):
+            result["review_reasons"].append(
+                "PATIENT_NAME_FROM_UNLABELLED_TEXT"
+            )
+
+
+        elif name_evidence["source"] == (
+            "CONFLICTING_NAME_EVIDENCE"
+        ):
+            result["review_reasons"].append(
+                "CONFLICTING_PATIENT_NAME_OCR_EVIDENCE"
+            )
+
+
+        elif name_evidence["source"] == (
+            "CONFLICTING_NAME_EVIDENCE"
+        ):
+            # Two OCR locations contain different
+            # patient names. Do not select either
+            # without human verification.
+            result["review_reasons"].append(
+                "CONFLICTING_PATIENT_NAME_OCR_EVIDENCE"
+            )
+
+
+        elif name_evidence["source"] == (
+            "AMBIGUOUS_CANDIDATES"
+        ):
+            result["review_reasons"].append(
+                "AMBIGUOUS_PATIENT_NAME_CANDIDATES"
+            )
+
+        elif name_evidence["source"] == (
+            "NO_VALID_CANDIDATE"
+        ):
+            result["review_reasons"].append(
+                "NO_VALID_PATIENT_NAME_CANDIDATE"
+            )
+
 
         mrn=_match(MRN_RE,text0)
         if not mrn:
